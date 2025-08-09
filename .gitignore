@@ -1,0 +1,22 @@
+# Ignore local secrets & environment files
+secrets.toml
+*.env
+.env*
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore Streamlit's local state
+.streamlit/
+
+# Ignore local testing artifacts
+*.log
+*.sqlite
+*.db
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
