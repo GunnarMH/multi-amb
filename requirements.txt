@@ -3,7 +3,7 @@ SQLAlchemy>=2.0
 psycopg2-binary
 cryptography
 argon2-cffi
-streamlit-authenticator
+streamlit-authenticator>=0.4.1
 tiktoken
 numpy
 openai>=1.0.0
