@@ -100,50 +100,49 @@ def get_user_prompt_row(user_name: str):
     return row.get("assistant_name", "Coach"), row.get("system_prompt", "You are a helpful assistant.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Authentication (rendered immediately so there is always UI)
+# Authentication (robust across st-authenticator versions)
 # ──────────────────────────────────────────────────────────────────────────────
+import streamlit_authenticator as stauth
+
+authenticator = stauth.Authenticate(
+    credentials=CREDS,
+    cookie_name="multicoach_auth",
+    key=st.secrets.get("AUTH_COOKIE_KEY", "change-this-please"),
+    cookie_expiry_days=14,
+)
+
+# Render the login widget IN THE SIDEBAR; ignore the return value
 try:
-    import streamlit_authenticator as stauth
-    authenticator = stauth.Authenticate(
-        credentials=CREDS,
-        cookie_name="multicoach_auth",
-        key=st.secrets.get("AUTH_COOKIE_KEY", "change-this-please"),
-        cookie_expiry_days=14,
-    )
-    # Handle API variations
-    try:
-        login_result = authenticator.login(location="sidebar")
-    except TypeError:
-        login_result = authenticator.login("Login", "sidebar")
+    authenticator.login(location="sidebar")         # newer API
+except TypeError:
+    authenticator.login("Login", "sidebar")         # older API
 
-    if isinstance(login_result, tuple) and len(login_result) == 3:
-        name, auth_status, username = login_result
-    else:
-        boot.update(state="complete")
-        st.stop()
+ss = st.session_state
+auth_status = ss.get("authentication_status", None)
+username    = ss.get("username", None)
+name        = ss.get("name", None)
 
-    if auth_status is False:
-        st.error("Username/password incorrect")
-        boot.update(state="error")
-        st.stop()
-    elif auth_status is None:
-        st.info("Please log in")
-        boot.update(state="complete")
-        st.stop()
-    log(f"Authenticated as {username}")
-except Exception as e:
-    boot.update(state="error")
-    st.exception(e)
+if auth_status is True and username:
+    pass  # proceed with the app
+elif auth_status is False:
+    st.error("Username/password incorrect")
+    st.stop()
+else:
+    st.info("Please log in")
     st.stop()
 
-assistant_name, USER_PROMPT = get_user_prompt_row(username)
+# We’re authenticated here
+current_user = username
+display_name = name or current_user or "User"
+
+assistant_name, USER_PROMPT = get_user_prompt_row(current_user)
 st.title(f"{assistant_name} (MultiCoach)")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Sidebar toggles & logout
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.caption(f"Signed in as **{username}** · Assistant: **{assistant_name}**")
+    st.caption(f"Signed in as **{current_user}** · Assistant: **{assistant_name}**")
     st.subheader("⚙️ Diagnostics")
     DISABLE_DB = st.checkbox("Disable DB (isolation)", value=DEFAULTS["DISABLE_DB"])
     DISABLE_OPENAI = st.checkbox("Disable OpenAI (isolation)", value=DEFAULTS["DISABLE_OPENAI"])
@@ -223,7 +222,7 @@ try:
                 VALUES (:u, :d, :a)
                 ON CONFLICT (user_name) DO UPDATE
                 SET display_name=EXCLUDED.display_name, assistant_name=EXCLUDED.assistant_name;
-            """), {"u": username, "d": name or username, "a": assistant_name})
+            """), {"u": current_user, "d": display_name, "a": assistant_name})
             s.commit()
         log("User ensured in DB")
     else:
@@ -280,7 +279,7 @@ def get_cipher(u: str) -> Optional[Fernet]:
         return Fernet(st.session_state.enc_key)
     return None
 
-cipher = get_cipher(username)
+cipher = get_cipher(current_user)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # OpenAI client (lazy + version-aware)
@@ -554,7 +553,7 @@ def run_profiler(user: str, recent_history: list):
 # App body
 # ──────────────────────────────────────────────────────────────────────────────
 try:
-    messages, tokens_since = load_memory(username)
+    messages, tokens_since = load_memory(current_user)
 except Exception as e:
     st.exception(e)
     messages, tokens_since = [], 0
@@ -564,7 +563,7 @@ st.session_state.setdefault("tokens_since_last_profile", tokens_since)
 
 # Sidebar: latest profile + admin
 with st.sidebar:
-    latest_profile_text, latest_profile_ts = load_latest_profile(username)
+    latest_profile_text, latest_profile_ts = load_latest_profile(current_user)
     st.subheader("Most Recent Profile")
     if latest_profile_text:
         try:
@@ -598,7 +597,7 @@ except Exception as e:
     st.exception(e)
 
 # Chat input
-placeholder = f"Ask anything, {name or username}…"
+placeholder = f"Ask anything, {display_name}…"
 prompt = st.chat_input(placeholder)
 
 if prompt:
@@ -623,10 +622,10 @@ if prompt:
     with st.chat_message("assistant", avatar="🧙‍♂️"):
         full = ""
         try:
-            retrieval = rag_retrieve(username, prompt, n=5,
+            retrieval = rag_retrieve(current_user, prompt, n=5,
                                      prev_neighbors=NEIGHBOR_PREV, next_neighbors=NEIGHBOR_NEXT)
             rag_ctx = retrieval['context_str']
-            lp_text, _lp_ts = load_latest_profile(username)
+            lp_text, _lp_ts = load_latest_profile(current_user)
             use_profile = lp_text and not str(lp_text).startswith("[Encrypted profile")
             profile_block = f"\n\n<user_profile>\n{lp_text}\n</user_profile>\n" if use_profile else ""
             gap_block = f"\n\n<session_note>{time_gap_note}</session_note>\n" if time_gap_note else ""
@@ -661,13 +660,20 @@ if prompt:
                 st.markdown(full)
             else:
                 try:
-                    stream = client.chat.completions.create(
-                        model=CHAT_MODEL, messages=messages_api, stream=True
-                    )
-                    full = st.write_stream(
-                        (c.choices[0].delta.content for c in stream
-                         if getattr(c.choices[0].delta, 'content', None))
-                    )
+                    if client:
+                        # Stream with v1 client
+                        stream = client.chat.completions.create(
+                            model=CHAT_MODEL, messages=messages_api, stream=True
+                        )
+                        full = st.write_stream(
+                            (c.choices[0].delta.content for c in stream
+                             if getattr(c.choices[0].delta, 'content', None))
+                        )
+                    else:
+                        # Legacy non-stream fallback
+                        r = legacy_openai.ChatCompletion.create(model=CHAT_MODEL, messages=messages_api)
+                        full = r["choices"][0]["message"]["content"]
+                        st.markdown(full)
                 except Exception as e:
                     st.error(f"Model error: {e}")
                     full = ""
@@ -680,16 +686,16 @@ if prompt:
     )
 
     try:
-        rag_add_chat_turns(username, st.session_state.messages)
+        rag_add_chat_turns(current_user, st.session_state.messages)
     except Exception as e:
         st.exception(e)
 
     try:
         st.session_state.tokens_since_last_profile += TOK(prompt) + TOK(full)
         if st.session_state.tokens_since_last_profile > PROFILE_UPDATE_THRESHOLD:
-            run_profiler(username, st.session_state.messages[-20:])
+            run_profiler(current_user, st.session_state.messages[-20:])
             st.session_state.tokens_since_last_profile = 0
-        save_memory(username, st.session_state.messages, st.session_state.tokens_since_last_profile)
+        save_memory(current_user, st.session_state.messages, st.session_state.tokens_since_last_profile)
     except Exception as e:
         st.exception(e)
 
@@ -703,6 +709,7 @@ with st.expander("🔎 Diagnostics / Environment"):
         "openai_client_v1": bool(client),
         "openai_legacy": bool(legacy_openai),
         "encryption_enabled": bool(cipher),
+        "user": current_user,
     })
     st.text("\n".join(st.session_state.__boot_log[-50:]))
 
