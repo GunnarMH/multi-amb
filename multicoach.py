@@ -1,7 +1,8 @@
-# multicoach.py — login fixed (streamlit-authenticator 0.4.x), per-user prompts, inline RAG, Neon-optimized
-# - Simple username+password login in the sidebar (no tuple unpack)
-# - Reads credentials from Secrets (JSON string or TOML table)
-# - Per-user system prompts from prompts.json (assistant_name + system_prompt)
+# multicoach.py — login robust (streamlit-authenticator 0.4.x), per-user prompts, inline RAG, Neon-optimized
+# - Sidebar login using streamlit-authenticator (no tuple-unpack)
+# - Credentials accepted as JSON (hashes) OR plaintext; plaintext is bcrypt-hashed in-memory at startup
+# - Cookie name bumped to avoid stale-cookie loops
+# - Per-user prompts from prompts.json (assistant_name + system_prompt)
 # - Per-user scoping for memory, profiles, RAG in one schema (optional DB_SCHEMA)
 # - Optional at-rest encryption per user (Argon2id + Fernet), passphrase per-session
 # - Neighbor-aware RAG retrieval for better thread context
@@ -16,8 +17,9 @@
 # numpy==2.3.2
 # cryptography==45.0.6
 # argon2-cffi==25.1.0
+# bcrypt==4.3.0
 #
-# Secrets needed (top level, not in a table):
+# Secrets (top level):
 # OPENAI_API_KEY = "sk-..."
 # AUTH_COOKIE_KEY = "long-random"
 # DB_SCHEMA = "multicoach"  # optional
@@ -35,6 +37,7 @@ import openai, tiktoken, numpy as np
 from cryptography.fernet import Fernet
 from argon2.low_level import Type, hash_secret_raw
 import streamlit_authenticator as stauth
+import bcrypt
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config & constants
@@ -151,24 +154,46 @@ def get_prompt_row(user_name: str):
     return cfg.get("assistant_name", "Coach"), cfg.get("system_prompt", "You are a helpful assistant.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Credentials (accept JSON string or TOML table from Secrets)
+# Credentials loader — accepts bcrypt hashes OR plaintext (auto-hash)
 # ──────────────────────────────────────────────────────────────────────────────
 raw_creds = st.secrets.get("AUTH_CREDENTIALS") or os.getenv("AUTH_CREDENTIALS")
-creds = None
+creds_src = None
 if isinstance(raw_creds, dict):
-    creds = raw_creds
+    creds_src = raw_creds
 elif isinstance(raw_creds, str) and raw_creds.strip():
     try:
-        creds = json.loads(raw_creds)
+        creds_src = json.loads(raw_creds)
     except Exception:
-        pass
-if not creds or not isinstance(creds, dict) or "usernames" not in creds or not creds["usernames"]:
+        creds_src = None
+if not creds_src or "usernames" not in creds_src or not isinstance(creds_src["usernames"], dict) or not creds_src["usernames"]:
     st.error("Missing or invalid AUTH_CREDENTIALS in Secrets.")
     st.stop()
 
+# normalize: strip passwords and auto-hash if not bcrypt
+norm = {"usernames": {}}
+for uname, u in creds_src["usernames"].items():
+    if not isinstance(u, dict):
+        continue
+    pwd_raw = str(u.get("password", "")).strip()
+    if not pwd_raw:
+        continue
+    if pwd_raw.startswith("$2a$") or pwd_raw.startswith("$2b$") or pwd_raw.startswith("$2y$"):
+        pwd_hash = pwd_raw
+    else:
+        # auto-hash plaintext for convenience
+        pwd_hash = bcrypt.hashpw(pwd_raw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    norm["usernames"][uname] = {
+        "email": u.get("email", f"{uname}@example.com"),
+        "name": u.get("name", uname),
+        "password": pwd_hash,
+    }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Authenticator — cookie name bumped to avoid stale sessions
+# ──────────────────────────────────────────────────────────────────────────────
 authenticator = stauth.Authenticate(
-    credentials=creds,
-    cookie_name="multicoach_auth",
+    credentials=norm,
+    cookie_name="multicoach_auth_v2",
     key=(st.secrets.get("AUTH_COOKIE_KEY") or os.getenv("AUTH_COOKIE_KEY") or "change-this"),
     cookie_expiry_days=14,
 )
