@@ -210,7 +210,7 @@ authenticator = stauth.Authenticate(
     cookie_expiry_days=14,
 )
 
-login_result = authenticator.login("Login", location="sidebar")
+login_result = authenticator.login(location="sidebar")
 if isinstance(login_result, tuple) and len(login_result) == 3:
     name, auth_status, username = login_result
 else:
