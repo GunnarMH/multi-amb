@@ -537,19 +537,12 @@ if prompt := st.chat_input(placeholder):
         # RAG retrieval
         retrieval = rag_retrieve(current_user, prompt, n=5, prev_neighbors=NEIGHBOR_PREV, next_neighbors=NEIGHBOR_NEXT)
         rag_ctx = retrieval['context_str']
-# Inject latest personal profile (DB) and session gap note
-lp_text, _lp_ts = load_latest_profile(current_user)
-use_profile = lp_text and not str(lp_text).startswith("[Encrypted profile")
-profile_block = f"
+        # Inject latest personal profile (DB) and session gap note
+        lp_text, _lp_ts = load_latest_profile(current_user)
+        use_profile = lp_text and not str(lp_text).startswith("[Encrypted profile")
+        profile_block = f"\n\n<user_profile>\n{lp_text}\n</user_profile>\n" if use_profile else ""
+        gap_block = f"\n\n<session_note>{time_gap_note}</session_note>\n" if time_gap_note else ""
 
-<user_profile>
-{lp_text}
-</user_profile>
-" if use_profile else ""
-gap_block = f"
-
-<session_note>{time_gap_note}</session_note>
-" if time_gap_note else ""
 
         system_prompt = f"""{USER_PROMPT}{gap_block}{profile_block}
 
