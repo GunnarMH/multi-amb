@@ -15,7 +15,7 @@
 # ---------------------------------------------------------------------------------
 
 # ── Imports (Streamlit first) ────────────────────────────────────────────────
-import os, sys, json, base64, hashlib, traceback
+import os, sys, json, base64, hashlib
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -632,7 +632,6 @@ with st.sidebar:
         st.success("Schema wiped. Recreating…")
         # Re-init
         try:
-            # re-use earlier init via functions
             pass
         finally:
             st.rerun()
