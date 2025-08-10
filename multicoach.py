@@ -419,9 +419,12 @@ def reset_app_schema():
     st.success("App schema wiped. Recreating…")
     st.rerun()
 
-# Optional one-shot schema reset via Streamlit secret
+# Optional one-shot schema reset via Streamlit secret (guarded to avoid loops)
 if str(st.secrets.get("RESET_SCHEMA_ON_START", "false")).lower() in ("1", "true", "yes"):
-    reset_app_schema()
+    if not st.session_state.get("_schema_reset_once"):
+        st.session_state["_schema_reset_once"] = True
+        reset_app_schema()
+    # else: already reset once this session; ignore
 
 
 def export_legacy_rag_json() -> str | None:
