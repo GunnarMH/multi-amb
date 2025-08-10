@@ -2,7 +2,7 @@
 # - Sidebar login using streamlit-authenticator (no tuple-unpack)
 # - Credentials accepted as JSON (hashes) OR plaintext; plaintext is bcrypt-hashed in-memory at startup
 # - Cookie name bumped to avoid stale-cookie loops
-# - Per-user prompts from prompts.json (assistant_name + system_prompt)
+# - Per-user prompts from profiles.json (assistant_name + system_prompt)
 # - Per-user scoping for memory, profiles, RAG in one schema (optional DB_SCHEMA)
 # - Optional at-rest encryption per user (Argon2id + Fernet), passphrase per-session
 # - Neighbor-aware RAG retrieval for better thread context
@@ -42,7 +42,7 @@ import bcrypt
 # ──────────────────────────────────────────────────────────────────────────────
 # Config & constants
 # ──────────────────────────────────────────────────────────────────────────────
-PROMPTS_PATH = Path(__file__).parent / 'prompts.json'
+PROMPTS_PATH = Path(__file__).parent / 'profiles.json'
 MAX_CONTEXT_TOKENS = 8000
 PROFILE_UPDATE_THRESHOLD = 7500
 PROFILE_MAX_AGE_DAYS = 7
