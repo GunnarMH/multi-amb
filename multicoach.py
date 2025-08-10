@@ -87,50 +87,89 @@ def _with_search_path(session):
         session.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{DB_SCHEMA}";'))
         session.execute(text(f'SET search_path TO "{DB_SCHEMA}", public;'))
 
+
 def init_db():
+    """Create fresh, compatible tables. Drop incompatible legacy tables in THIS schema only."""
     with conn.session as s:
         _with_search_path(s)
-        s.execute(text("""
+
+        def regclass_exists(tname: str) -> bool:
+            row = s.execute(text("SELECT to_regclass(:t)"), {"t": tname}).fetchone()
+            return bool(row and row[0])
+
+        def has_col(tname: str, col: str) -> bool:
+            row = s.execute(text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = :t
+                  AND column_name = :c
+                LIMIT 1
+                """
+            ), {"t": tname, "c": col}).fetchone()
+            return bool(row)
+
+        # Drop incompatible legacy tables (since you said fresh start in this schema)
+        if regclass_exists("profiles") and (not has_col("profiles", "ts") or not has_col("profiles", "user_name")):
+            s.execute(text("DROP TABLE IF EXISTS profiles CASCADE;"))
+        if regclass_exists("memory") and (has_col("memory", "id") or not has_col("memory", "user_name")):
+            s.execute(text("DROP TABLE IF EXISTS memory CASCADE;"))
+        if regclass_exists("rag_entries") and (not has_col("rag_entries", "user_name") or not has_col("rag_entries", "ts")):
+            s.execute(text("DROP TABLE IF EXISTS rag_entries CASCADE;"))
+
+        # Create fresh tables
+        s.execute(text(
+            """
             CREATE TABLE IF NOT EXISTS users (
                 user_name text PRIMARY KEY,
                 display_name text NOT NULL,
                 assistant_name text NOT NULL
             );
-        """))
-        s.execute(text("""
+            """
+        ))
+        s.execute(text(
+            """
             CREATE TABLE IF NOT EXISTS user_keys (
                 user_name text PRIMARY KEY REFERENCES users(user_name) ON DELETE CASCADE,
                 salt bytea NOT NULL
             );
-        """))
-        s.execute(text("""
+            """
+        ))
+        s.execute(text(
+            """
             CREATE TABLE IF NOT EXISTS profiles (
                 id bigserial PRIMARY KEY,
                 user_name text NOT NULL REFERENCES users(user_name) ON DELETE CASCADE,
                 profile_text text NOT NULL,
                 ts timestamptz NOT NULL
             );
-        """))
+            """
+        ))
         s.execute(text("CREATE INDEX IF NOT EXISTS ix_profiles_user_ts ON profiles(user_name, ts DESC);"))
-        s.execute(text("""
+        s.execute(text(
+            """
             CREATE TABLE IF NOT EXISTS memory (
                 user_name text PRIMARY KEY REFERENCES users(user_name) ON DELETE CASCADE,
-                session_blob text NOT NULL,  -- encrypted or plaintext JSON
+                session_blob text NOT NULL,
                 ts timestamptz NOT NULL
             );
-        """))
+            """
+        ))
         s.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_ts ON memory(ts DESC);"))
-        s.execute(text("""
+        s.execute(text(
+            """
             CREATE TABLE IF NOT EXISTS rag_entries (
                 id bigserial PRIMARY KEY,
                 user_name text NOT NULL REFERENCES users(user_name) ON DELETE CASCADE,
                 doc_id text NOT NULL,
-                text_blob text NOT NULL,      -- encrypted or plaintext JSON of {text, metadata}
+                text_blob text NOT NULL,
                 embedding real[] NOT NULL,
                 ts timestamptz NOT NULL,
                 UNIQUE (user_name, doc_id)
             );
-        """))
+            """
+        ))
         s.execute(text("CREATE INDEX IF NOT EXISTS ix_rag_user_ts ON rag_entries(user_name, ts);"))
         s.commit()
 
@@ -190,11 +229,13 @@ assistant_name, USER_PROMPT = get_user_prompt_row(current_user)
 # Ensure user exists in users table
 with conn.session as s:
     _with_search_path(s)
-    s.execute(text("""
+    s.execute(text(
+        """
         INSERT INTO users(user_name, display_name, assistant_name)
         VALUES (:u, :d, :a)
         ON CONFLICT (user_name) DO UPDATE SET display_name=EXCLUDED.display_name, assistant_name=EXCLUDED.assistant_name;
-    """), {"u": current_user, "d": name or current_user, "a": assistant_name})
+        """
+    ), {"u": current_user, "d": name or current_user, "a": assistant_name})
     s.commit()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -294,10 +335,12 @@ def rag_add_chat_turns(user: str, chat: list[dict]):
                 ts_dt = datetime.fromisoformat(ts.replace("Z","+00:00"))
             except Exception:
                 ts_dt = datetime.now(timezone.utc)
-            s.execute(text("""
+            s.execute(text(
+                """
                 INSERT INTO rag_entries(user_name, doc_id, text_blob, embedding, ts)
                 VALUES (:u, :d, :b, :e, :ts)
-            """), {"u": user, "d": doc_id, "b": payload, "e": emb, "ts": ts_dt})
+                """
+            ), {"u": user, "d": doc_id, "b": payload, "e": emb, "ts": ts_dt})
         s.commit()
 
 
@@ -375,9 +418,11 @@ def save_profile(user: str, text_val: str):
         blob = cipher.encrypt(text_val.encode("utf-8")).decode("utf-8")
     with conn.session as s:
         _with_search_path(s)
-        s.execute(text("""
+        s.execute(text(
+            """
             INSERT INTO profiles(user_name, profile_text, ts) VALUES (:u, :p, :ts)
-        """), {"u": user, "p": blob, "ts": datetime.now(timezone.utc)})
+            """
+        ), {"u": user, "p": blob, "ts": datetime.now(timezone.utc)})
         s.commit()
 
 
@@ -402,11 +447,13 @@ def save_memory(user: str, messages: list, tokens_count: int):
         data = cipher.encrypt(data.encode("utf-8")).decode("utf-8")
     with conn.session as s:
         _with_search_path(s)
-        s.execute(text("""
+        s.execute(text(
+            """
             INSERT INTO memory(user_name, session_blob, ts)
             VALUES (:u, :b, :ts)
             ON CONFLICT (user_name) DO UPDATE SET session_blob=EXCLUDED.session_blob, ts=EXCLUDED.ts
-        """), {"u": user, "b": data, "ts": datetime.now(timezone.utc)})
+            """
+        ), {"u": user, "b": data, "ts": datetime.now(timezone.utc)})
         s.commit()
 
 
@@ -497,11 +544,11 @@ with st.sidebar:
     st.divider()
     st.subheader("⚙️ Testing only")
     if st.button("Wipe app schema (tables in this schema)"):
-        with conn.session as s:
-            _with_search_path(s)
+        with conn.session as s2:
+            _with_search_path(s2)
             for tbl in ["rag_entries", "memory", "profiles", "user_keys", "users"]:
-                s.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE;"))
-            s.commit()
+                s2.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE;"))
+            s2.commit()
         st.success("Schema wiped. Recreating…")
         init_db()
         st.rerun()
@@ -542,7 +589,6 @@ if prompt := st.chat_input(placeholder):
         use_profile = lp_text and not str(lp_text).startswith("[Encrypted profile")
         profile_block = f"\n\n<user_profile>\n{lp_text}\n</user_profile>\n" if use_profile else ""
         gap_block = f"\n\n<session_note>{time_gap_note}</session_note>\n" if time_gap_note else ""
-
 
         system_prompt = f"""{USER_PROMPT}{gap_block}{profile_block}
 
