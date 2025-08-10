@@ -34,6 +34,8 @@ NEIGHBOR_PREV = 1
 NEIGHBOR_NEXT = 0
 NEIGHBOR_MAX_AGE_HOURS = 12
 
+st.sidebar.caption("Secrets present: " + ", ".join(sorted(map(str, st.secrets.keys()))))
+
 # ──────────────────────────────────────────────────────────────────────────────
 # OpenAI
 # ──────────────────────────────────────────────────────────────────────────────
