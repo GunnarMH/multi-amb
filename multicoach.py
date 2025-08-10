@@ -168,12 +168,8 @@ def migrate_rag_json_to_table():
 # Timestamptz migration for legacy TEXT columns
 # ──────────────────────────────────────────────────────────────────────────────
 
-def migrate_text_timestamps_to_timestamptz()  # convert TEXT timestamps → timestamptz once
-
-# Optional one-shot schema reset via Streamlit secret
-if str(st.secrets.get("RESET_SCHEMA_ON_START", "false")).lower() in ("1", "true", "yes"):
-    reset_app_schema()
-
+def migrate_text_timestamps_to_timestamptz():
+    """Convert legacy TEXT timestamps to TIMESTAMPTZ once (idempotent)."""
     MIG = "2025-08-09-text-ts-to-timestamptz"
     with conn.session as s:
         s.execute(text("""
@@ -184,18 +180,28 @@ if str(st.secrets.get("RESET_SCHEMA_ON_START", "false")).lower() in ("1", "true"
         """))
         done = s.execute(text("SELECT 1 FROM schema_migrations WHERE name=:n"), {"n": MIG}).fetchone()
         if not done:
-            # Convert profiles.timestamp (TEXT -> TIMESTAMPTZ)
-            s.execute(text("""
-                ALTER TABLE profiles
-                ALTER COLUMN "timestamp" TYPE timestamptz
-                USING ("timestamp"::timestamptz);
-            """))
-            # Convert memory.last_saved (TEXT -> TIMESTAMPTZ)
-            s.execute(text("""
-                ALTER TABLE memory
-                ALTER COLUMN last_saved TYPE timestamptz
-                USING (last_saved::timestamptz);
-            """))
+            # profiles.timestamp (TEXT -> TIMESTAMPTZ)
+            typ = s.execute(text("""
+                SELECT data_type FROM information_schema.columns
+                WHERE table_name='profiles' AND column_name='timestamp'
+            """)).fetchone()
+            if typ and typ[0] == 'text':
+                s.execute(text("""
+                    ALTER TABLE profiles
+                    ALTER COLUMN "timestamp" TYPE timestamptz
+                    USING ("timestamp"::timestamptz);
+                """))
+            # memory.last_saved (TEXT -> TIMESTAMPTZ)
+            typ2 = s.execute(text("""
+                SELECT data_type FROM information_schema.columns
+                WHERE table_name='memory' AND column_name='last_saved'
+            """)).fetchone()
+            if typ2 and typ2[0] == 'text':
+                s.execute(text("""
+                    ALTER TABLE memory
+                    ALTER COLUMN last_saved TYPE timestamptz
+                    USING (last_saved::timestamptz);
+                """))
             s.execute(text("INSERT INTO schema_migrations(name) VALUES (:n) ON CONFLICT DO NOTHING"), {"n": MIG})
         s.commit()
 
@@ -412,6 +418,10 @@ def reset_app_schema():
         s.commit()
     st.success("App schema wiped. Recreating…")
     st.rerun()
+
+# Optional one-shot schema reset via Streamlit secret
+if str(st.secrets.get("RESET_SCHEMA_ON_START", "false")).lower() in ("1", "true", "yes"):
+    reset_app_schema()
 
 
 def export_legacy_rag_json() -> str | None:
